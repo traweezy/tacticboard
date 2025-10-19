@@ -7,11 +7,15 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
 
 	"github.com/traweezy/tacticboard/internal/config"
 	"github.com/traweezy/tacticboard/internal/model"
+	"github.com/traweezy/tacticboard/internal/observability"
 	"github.com/traweezy/tacticboard/internal/store"
 	"github.com/traweezy/tacticboard/internal/util"
 )
@@ -26,12 +30,20 @@ var (
 
 // Hub orchestrates room fan-out and persistence.
 type Hub struct {
-	cfg   config.Config
-	store store.Store
-	log   *zap.Logger
+	cfg    config.Config
+	store  store.Store
+	log    *zap.Logger
+	tracer trace.Tracer
+
+	metrics hubMetrics
 
 	roomsMu sync.RWMutex
 	rooms   map[string]*roomState
+}
+
+type hubMetrics struct {
+	connections metric.Int64UpDownCounter
+	operations  metric.Int64Counter
 }
 
 type roomState struct {
@@ -54,17 +66,43 @@ type client struct {
 }
 
 // NewHub constructs an observable websocket hub.
-func NewHub(cfg config.Config, store store.Store, log *zap.Logger) *Hub {
+func NewHub(cfg config.Config, store store.Store, log *zap.Logger, telemetry *observability.Telemetry) *Hub {
+	meter := telemetry.MeterProvider.Meter("github.com/traweezy/tacticboard/ws")
+
+	connections, err := meter.Int64UpDownCounter(
+		"ws.connections",
+		metric.WithDescription("Active WebSocket connections"),
+	)
+	if err != nil {
+		log.Warn("ws metrics: failed to create connection counter", zap.Error(err))
+	}
+
+	ops, err := meter.Int64Counter(
+		"ws.operations",
+		metric.WithDescription("Operations broadcasted to clients"),
+	)
+	if err != nil {
+		log.Warn("ws metrics: failed to create operation counter", zap.Error(err))
+	}
+
 	return &Hub{
-		cfg:   cfg,
-		store: store,
-		log:   log.Named("ws_hub"),
+		cfg:    cfg,
+		store:  store,
+		log:    log.Named("ws_hub"),
+		tracer: telemetry.TracerProvider.Tracer("github.com/traweezy/tacticboard/ws"),
+		metrics: hubMetrics{
+			connections: connections,
+			operations:  ops,
+		},
 		rooms: make(map[string]*roomState),
 	}
 }
 
 // HandleConnection performs the hello handshake and launches client loops.
 func (h *Hub) HandleConnection(ctx context.Context, conn *websocket.Conn) {
+	ctx, span := h.tracer.Start(ctx, "ws.HandleConnection", trace.WithSpanKind(trace.SpanKindServer))
+	defer span.End()
+
 	defer func() {
 		if err := conn.Close(); err != nil {
 			h.log.Warn("close websocket", zap.Error(err))
@@ -145,7 +183,9 @@ func (h *Hub) HandleConnection(ctx context.Context, conn *websocket.Conn) {
 
 	state := h.getOrCreateRoom(room.ID)
 	state.addClient(client)
+	h.metrics.observeConnection(ctx, room.ID, +1)
 	defer state.removeClient(client)
+	defer h.metrics.observeConnection(ctx, room.ID, -1)
 
 	if err := h.sendInitialState(ctx, client, room); err != nil {
 		client.log.Warn("send initial state", zap.Error(err))
@@ -157,6 +197,10 @@ func (h *Hub) HandleConnection(ctx context.Context, conn *websocket.Conn) {
 }
 
 func (h *Hub) sendInitialState(ctx context.Context, c *client, room model.Room) error {
+	ctx, span := h.tracer.Start(ctx, "ws.sendInitialState")
+	defer span.End()
+	span.SetAttributes(attribute.String("room.id", room.ID))
+
 	if room.Snapshot != nil {
 		if payload, err := EncodeSnapshot(room.ID, *room.Snapshot); err == nil {
 			if err := c.queue(payload); err != nil {
@@ -365,6 +409,13 @@ func (c *client) handlePing(msg *PingMessage) {
 }
 
 func (c *client) handleOp(ctx context.Context, msg *OpMessage) {
+	ctx, span := c.hub.tracer.Start(ctx, "ws.handleOp")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("room.id", c.roomID),
+		attribute.Int64("op.seq", msg.Seq),
+	)
+
 	if c.role != util.RoleEdit {
 		c.log.Warn("discard op from viewer")
 		_ = c.queue(EncodeError(ErrorUnauthorized, "edit capability required"))
@@ -404,6 +455,22 @@ func (c *client) handleOp(ctx context.Context, msg *OpMessage) {
 		return
 	}
 
+	c.hub.metrics.observeOperations(ctx, c.roomID, int64(len(op.Ops)))
+
 	state := c.hub.getOrCreateRoom(c.roomID)
 	state.broadcast(c, payload)
+}
+
+func (m hubMetrics) observeConnection(ctx context.Context, roomID string, delta int64) {
+	if m.connections == nil {
+		return
+	}
+	m.connections.Add(ctx, delta, metric.WithAttributes(attribute.String("room.id", roomID)))
+}
+
+func (m hubMetrics) observeOperations(ctx context.Context, roomID string, count int64) {
+	if m.operations == nil {
+		return
+	}
+	m.operations.Add(ctx, count, metric.WithAttributes(attribute.String("room.id", roomID)))
 }

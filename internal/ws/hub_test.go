@@ -1,18 +1,25 @@
 package ws
 
 import (
-	"encoding/json"
-	"testing"
+    "encoding/json"
+    "testing"
 
-	"github.com/stretchr/testify/require"
-	"go.uber.org/zap"
+    "github.com/stretchr/testify/require"
+    "go.opentelemetry.io/otel/trace"
+    "go.uber.org/zap"
 )
 
 func TestClientQueueDropsOldest(t *testing.T) {
-	c := &client{
-		send: make(chan []byte, 2),
-		log:  zap.NewNop(),
-	}
+    hub := &Hub{
+        log:   zap.NewNop(),
+        tracer: trace.NewNoopTracerProvider().Tracer("test"),
+        metrics: hubMetrics{},
+    }
+    c := &client{
+        hub:  hub,
+        send: make(chan []byte, 2),
+        log:  zap.NewNop(),
+    }
 
 	require.NoError(t, c.queue([]byte("a")))
 	require.NoError(t, c.queue([]byte("b")))
@@ -26,10 +33,11 @@ func TestClientQueueDropsOldest(t *testing.T) {
 }
 
 func TestClientQueueClosed(t *testing.T) {
-	c := &client{
-		send: make(chan []byte, 1),
-		log:  zap.NewNop(),
-	}
+    c := &client{
+        hub:  &Hub{tracer: trace.NewNoopTracerProvider().Tracer("test")},
+        send: make(chan []byte, 1),
+        log:  zap.NewNop(),
+    }
 	c.closed.Store(true)
 
 	err := c.queue([]byte("payload"))
@@ -37,10 +45,16 @@ func TestClientQueueClosed(t *testing.T) {
 }
 
 func TestClientHandlePingEnqueuesPong(t *testing.T) {
-	c := &client{
-		send: make(chan []byte, 1),
-		log:  zap.NewNop(),
-	}
+    hub := &Hub{
+        tracer: trace.NewNoopTracerProvider().Tracer("test"),
+        metrics: hubMetrics{},
+        log:    zap.NewNop(),
+    }
+    c := &client{
+        hub:  hub,
+        send: make(chan []byte, 1),
+        log:  zap.NewNop(),
+    }
 
 	ping := &PingMessage{Type: TypePing, TS: 123}
 	c.handlePing(ping)

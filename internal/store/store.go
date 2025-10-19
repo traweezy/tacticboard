@@ -5,6 +5,7 @@ import (
 
 	"github.com/traweezy/tacticboard/internal/config"
 	"github.com/traweezy/tacticboard/internal/model"
+	"github.com/traweezy/tacticboard/internal/observability"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 )
@@ -26,16 +27,23 @@ var Module = fx.Module(
 )
 
 // New returns the configured Store implementation.
-func New(cfg config.Config, log *zap.Logger) (Store, error) {
+func New(cfg config.Config, log *zap.Logger, telemetry *observability.Telemetry) (Store, error) {
 	if cfg.DBEnable {
 		store, err := newPostgresStore(cfg.DBDSN)
 		if err != nil {
 			return nil, err
 		}
 		log.Info("store initialized", zap.String("driver", "postgres"))
-		return store, nil
+		return wrapWithTelemetry(store, telemetry, log), nil
 	}
 
 	log.Info("store initialized", zap.String("driver", "memory"))
-	return NewMemoryStore(), nil
+	return wrapWithTelemetry(NewMemoryStore(), telemetry, log), nil
+}
+
+func wrapWithTelemetry(base Store, telemetry *observability.Telemetry, log *zap.Logger) Store {
+	if telemetry == nil || !telemetry.Enabled {
+		return base
+	}
+	return withInstrumentation(base, telemetry, log)
 }
