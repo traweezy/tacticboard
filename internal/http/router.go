@@ -12,6 +12,7 @@ import (
 	"github.com/traweezy/tacticboard/internal/config"
 	"github.com/traweezy/tacticboard/internal/http/handlers"
 	"github.com/traweezy/tacticboard/internal/http/middleware"
+	"github.com/traweezy/tacticboard/internal/observability"
 )
 
 // Module wires HTTP handlers, router, and server lifecycle.
@@ -28,13 +29,23 @@ var Module = fx.Module(
 )
 
 // NewEngine configures the Gin engine with registered routes.
-func NewEngine(cfg config.Config, rooms *handlers.RoomHandler, health *handlers.HealthHandler, ws *handlers.WSHandler) *gin.Engine {
+func NewEngine(cfg config.Config, rooms *handlers.RoomHandler, health *handlers.HealthHandler, ws *handlers.WSHandler, telemetry *observability.Telemetry, log *zap.Logger) *gin.Engine {
 	if cfg.Environment == "production" {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
+	tracer := telemetry.TracerProvider.Tracer("github.com/traweezy/tacticboard/http")
+	httpMetrics, err := middleware.NewHTTPMetrics(telemetry.MeterProvider.Meter("github.com/traweezy/tacticboard/http"))
+	if err != nil {
+		log.Warn("http metrics initialization failed", zap.Error(err))
+	}
+
 	engine := gin.New()
-	engine.Use(gin.Recovery(), middleware.CORSMiddleware(cfg.AllowedOrigins))
+	engine.Use(
+		gin.Recovery(),
+		middleware.CORSMiddleware(cfg.AllowedOrigins),
+		middleware.RequestLogger(log, tracer, httpMetrics),
+	)
 
 	rateLimiter := middleware.NewIPRateLimiter(cfg.APIRateRPS, cfg.APIRateBurst)
 
