@@ -69,6 +69,13 @@ docker run --env-file .env -p 8080:8080 tacticboard
 - `API_RATE_RPS` / `API_RATE_BURST` – per-IP REST rate limiting (default 5 rps / burst 10)
 - `DB_ENABLE` + `DB_DSN` – enable Postgres-backed storage via GORM (default in-memory)
 - `WS_WRITE_BUFFER`, `WS_READ_LIMIT` – tune WebSocket buffers and max payload sizes
+- `OBSERVABILITY_ENABLED` – toggle OpenTelemetry exporters (default `true`)
+- `SERVICE_NAME` – logical service identifier used in traces/metrics (default `tacticboard`)
+- `OTEL_EXPORTER_OTLP_ENDPOINT` – OTLP collector endpoint (e.g., `otel-collector:4318`)
+- `OTEL_EXPORTER_OTLP_HEADERS` – comma-separated `key=value` headers sent with OTLP requests
+- `OTEL_EXPORTER_OTLP_INSECURE` – set `true` to skip TLS when talking to the collector
+- `TRACE_SAMPLING_RATIO` – parent-based trace sampler ratio (`0.0`–`1.0`, default `1.0`)
+- `METRICS_EXPORT_INTERVAL_SEC` – OTLP metrics reader interval in seconds (default `30`)
 
 ## Migrations
 
