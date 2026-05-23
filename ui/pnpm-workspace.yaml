@@ -1,0 +1,23 @@
+packages:
+  - .
+
+allowBuilds:
+  esbuild: true
+  unrs-resolver: true
+
+overrides:
+  "@isaacs/brace-expansion": ^5.0.1
+  "ajv@<6.14.0": ^6.14.0
+  brace-expansion: ^2.0.3
+  flatted: ^3.4.2
+  js-yaml: ^4.1.1
+  "minimatch@<3.1.4": ^3.1.4
+  "minimatch@>=9.0.0 <9.0.7": ^9.0.7
+  "minimatch@>=10.0.0 <10.2.3": ^10.2.5
+  "picomatch@<2.3.2": ^2.3.2
+  "picomatch@>=4.0.0 <4.0.4": ^4.0.4
+  postcss: ^8.5.15
+  rollup: ^4.60.4
+  vite: ^7.3.2
+  ws: 8.20.1
+  yaml: ^1.10.3
